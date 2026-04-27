@@ -102,40 +102,62 @@ def pull_looker_data():
 
     print(f"  Pulling Looker data ({date_filter})...")
 
-    rows = looker_query(
-        token,
-        fields=[
-            "order.week",
-            "order.csm_name",
-            "order.company_name",
-            "order.revenue",
-        ],
-        filters={"order.week": date_filter},
-        sorts=["order.week desc"],
-    )
+    # Try multiple possible field name formats
+    # Format 1: standard view.field_name
+    field_candidates = [
+        ["order.week", "order.client_success_manager", "order.company_name_with_office", "order.revenue"],
+        ["order.week", "order.csm", "order.company_name_with_office", "order.total_revenue"],
+        ["order.week", "order.client_success_manager", "order.company_name", "order.revenue"],
+        ["order.week_start_date", "order.client_success_manager", "order.company_name_with_office", "order.revenue"],
+    ]
+
+    rows = None
+    used_fields = None
+    for fields_attempt in field_candidates:
+        try:
+            rows = looker_query(
+                token,
+                fields=fields_attempt,
+                filters={fields_attempt[0]: date_filter},
+                sorts=[f"{fields_attempt[0]} desc"],
+            )
+            used_fields = fields_attempt
+            print(f"  ✓ Fields worked: {fields_attempt}")
+            break
+        except Exception as e:
+            print(f"  ⚠ Fields failed {fields_attempt[0:2]}: {e}")
+            continue
+
+    if rows is None:
+        raise Exception("Could not find working Looker field names. Check explore field names.")
+
+    week_field   = used_fields[0]
+    csm_field    = used_fields[1]
+    company_field = used_fields[2]
+    rev_field    = used_fields[3]
 
     # Filter out exclusions
     rows = [
         r for r in rows
-        if r.get("order.company_name") not in EXCLUDE_COMPANIES
-        and r.get("order.csm_name") not in EXCLUDE_CSMS
-        and r.get("order.revenue") is not None
+        if r.get(company_field) not in EXCLUDE_COMPANIES
+        and r.get(csm_field) not in EXCLUDE_CSMS
+        and r.get(rev_field) is not None
     ]
 
     print(f"  ✓ {len(rows)} rows from Looker")
 
     # Organize by week → CSM → company
-    weeks = sorted(set(r["order.week"] for r in rows), reverse=True)[:8]
-    
+    weeks = sorted(set(r[week_field] for r in rows), reverse=True)[:8]
+
     by_csm_week = defaultdict(lambda: defaultdict(float))
     by_company  = defaultdict(lambda: defaultdict(float))
     by_week     = defaultdict(float)
 
     for r in rows:
-        week    = r["order.week"]
-        csm     = r["order.csm_name"] or "Unknown"
-        company = r["order.company_name"] or "Unknown"
-        rev     = float(r["order.revenue"] or 0)
+        week    = r[week_field]
+        csm     = r[csm_field] or "Unknown"
+        company = r[company_field] or "Unknown"
+        rev     = float(r[rev_field] or 0)
 
         by_csm_week[csm][week]        += rev
         by_company[company]["total"]  += rev
